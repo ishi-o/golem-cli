@@ -5,10 +5,10 @@ go 1.23.0
 require (
 	github.com/cloudwego/eino v0.9.15
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
-	github.com/ishi-o/golem/core v0.1.0
-	github.com/ishi-o/golem/sandbox/docker v0.1.0
-	github.com/ishi-o/golem/sandbox/kubernetes v0.1.0
-	github.com/ishi-o/golem/store/sqlx v0.1.0
+	github.com/ishi-o/golem/core v0.2.0
+	github.com/ishi-o/golem/sandbox/docker v0.2.0
+	github.com/ishi-o/golem/sandbox/kubernetes v0.2.0
+	github.com/ishi-o/golem/store/sqlx v0.2.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.11.1

@@ -1,12 +1,6 @@
 version: 2
 updates:
-  # Go modules: direct dependencies only. Dependabot must never rewrite
-  // indirect require lines: doing so can pin transitive dependencies above
-  # the ceilings below and force the module go directive up (the go<=1.23
-  // policy enforced by go.work). Capped families are ignored above their
-  # ceiling. The golem modules themselves are pinned by release tags and
-  # updated deliberately, not by dependabot.
-  - package-ecosystem: golang
+  - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
