@@ -14,7 +14,7 @@ import (
 
 // Version is the CLI version reported by `golem version`; release builds
 // stamp it via -ldflags "-X ...cmd.Version=<tag>".
-var Version = "dev"
+var Version = "v1.0.1"
 
 // Runner is the small portion of the core runtime the CLI needs.
 type Runner interface {
