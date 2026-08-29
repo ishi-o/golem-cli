@@ -1,9 +1,10 @@
 {
-	"$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-	"release-type": "go",
-	"packages": {
-		".": {
-			"package-name": "github.com/ishi-o/golem-cli"
-		}
-	}
+    "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+    "release-type": "go",
+    "packages": {
+        ".": {
+            "package-name": "golem-cli",
+            "version-file": "cmd/version.txt"
+        }
+    }
 }

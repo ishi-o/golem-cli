@@ -10,11 +10,15 @@ import (
 
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/spf13/cobra"
+
+	_ "embed"
 )
 
-// Version is the CLI version reported by `golem version`; release builds
-// stamp it via -ldflags "-X ...cmd.Version=<tag>".
-var Version = "v1.0.1"
+//go:embed version.txt
+var versionFile string
+
+// Version is the CLI version reported by `golem version`
+var Version = "v" + versionFile
 
 // Runner is the small portion of the core runtime the CLI needs.
 type Runner interface {
