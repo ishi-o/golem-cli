@@ -5,6 +5,7 @@ package bootstrap
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,8 +21,13 @@ import (
 	"github.com/ishi-o/golem/core/tools"
 	sqlxstore "github.com/ishi-o/golem/store/sqlx"
 	"github.com/jmoiron/sqlx"
-	_ "github.com/mattn/go-sqlite3"
+	"modernc.org/sqlite"
 )
+
+// The pure-Go driver keeps the CLI cgo-free so release binaries cross-
+// compile. sqlx resolves bindvars by driver name and only knows "sqlite3",
+// so the driver is registered under that name.
+func init() { sql.Register("sqlite3", &sqlite.Driver{}) }
 
 const (
 	apiKeyEnv  = "OPENAI_API_KEY"

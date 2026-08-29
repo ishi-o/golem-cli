@@ -32,4 +32,7 @@ modules resolve from their published versions.
 
 `.github/workflows/release.yml` runs the tests on every PR and push, and
 lets [release-please](https://github.com/googleapis/release-please) cut
-versioned tags from conventional commits on `main`.
+versioned tags from conventional commits on `main`. Each release gets
+cgo-free binaries for linux, darwin and windows (amd64 and arm64) plus a
+`checksums.txt`, built with `CGO_ENABLED=0` — the SQLite store runs on
+`modernc.org/sqlite`, so no platform toolchain is needed to build or run.

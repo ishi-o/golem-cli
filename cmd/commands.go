@@ -75,5 +75,5 @@ func newCancelCommand(config Config) *cobra.Command {
 }
 
 func newVersionCommand(output io.Writer) *cobra.Command {
-	return &cobra.Command{Use: "version", Short: "Print the CLI version", Run: func(*cobra.Command, []string) { _, _ = fmt.Fprintln(output, "golem dev") }}
+	return &cobra.Command{Use: "version", Short: "Print the CLI version", Run: func(*cobra.Command, []string) { _, _ = fmt.Fprintln(output, "golem", Version) }}
 }

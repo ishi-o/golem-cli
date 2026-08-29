@@ -56,5 +56,32 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+      - uses: ./.github/actions/setup-go
       - uses: googleapis/release-please-action@v4
         id: release
+      # The CLI is pure Go (modernc.org/sqlite, no cgo), so release binaries
+      # cross-compile with CGO_ENABLED=0 and attach to the GitHub release
+      # release-please just created.
+      - name: Build and upload release binaries
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+            goos="${target%/*}" goarch="${target#*/}"
+            name="golem-cli_${goos}_${goarch}"
+            ext=""
+            [ "$goos" = "windows" ] && ext=".exe"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+              -ldflags "-s -w -X github.com/ishi-o/golem-cli/cmd.Version=${TAG#v}" \
+              -o "dist/$name$ext" .
+            if [ "$goos" = "windows" ]; then
+              (cd dist && zip -q "$name.zip" "$name$ext") && rm "dist/$name$ext"
+            else
+              tar -C dist -czf "dist/$name.tar.gz" "$name$ext" && rm "dist/$name$ext"
+            fi
+          done
+          (cd dist && sha256sum ./* > checksums.txt)
+          gh release upload "$TAG" dist/* --clobber
