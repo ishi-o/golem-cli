@@ -1,7 +1,7 @@
 // Package cmd builds the golem command line with Cobra. The command package
 // owns terminal interaction only; callers inject the core runner so the CLI
 // does not choose a model provider or persistence backend on their behalf.
-package cli
+package cmd
 
 import (
 	"io"

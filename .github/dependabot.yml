@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # Go modules: direct dependencies only. Dependabot must never rewrite
+  // indirect require lines: doing so can pin transitive dependencies above
+  # the ceilings below and force the module go directive up (the go<=1.23
+  // policy enforced by go.work). Capped families are ignored above their
+  # ceiling. The golem modules themselves are pinned by release tags and
+  # updated deliberately, not by dependabot.
+  - package-ecosystem: golang
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-type: direct
+    ignore:
+      - dependency-name: github.com/ishi-o/golem/*
+      - dependency-name: go.opentelemetry.io/*
+        versions: ['>= 1.39.0']
+      - dependency-name: go.opentelemetry.io/contrib/*
+        versions: ['>= 0.64.0']
+      - dependency-name: google.golang.org/grpc
+        versions: ['>= 1.76.0']
+      - dependency-name: golang.org/x/*
+        versions: ['>= 0.37.0']
+      - dependency-name: k8s.io/*
+      - dependency-name: k8s.io/kube-openapi
+      - dependency-name: sigs.k8s.io/yaml
+        versions: ['>= 1.5.0']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

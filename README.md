@@ -15,8 +15,9 @@ go run . chat "hello"
 ## Layout
 
 - `main.go` — entry point; loads config, bootstraps the runtime, runs Cobra.
-- `cli/` — the command tree (chat, cancel, version) and terminal listeners.
-- `bootstrap/` — env-driven runtime assembly: model, SQLite store, sandbox.
+- `cmd/` — the command tree (chat, cancel, version) and terminal listeners.
+- `internal/bootstrap/` — env-driven runtime assembly: model, SQLite store,
+  sandbox.
 - `docs/` — the [CLI guide](docs/cli.md) and the
   [configuration reference](docs/configuration.md).
 
@@ -24,5 +25,11 @@ go run . chat "hello"
 
 `go.work` points at a sibling checkout of `golem`
 (`../golem/core`, `../golem/store/sqlx`, `../golem/sandbox/...`), so edits
-to the library are picked up immediately. Without it, the `golem` modules
-resolve from their published versions.
+to the library are picked up immediately. Without it (as in CI), the `golem`
+modules resolve from their published versions.
+
+## CI
+
+`.github/workflows/release.yml` runs the tests on every PR and push, and
+lets [release-please](https://github.com/googleapis/release-please) cut
+versioned tags from conventional commits on `main`.

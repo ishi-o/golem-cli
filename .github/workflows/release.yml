@@ -1,0 +1,60 @@
+name: release
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'go.work'
+      - 'go.work.sum'
+      - '.github/**'
+      - 'CHANGELOG.md'
+      - '.release-please-manifest.json'
+      - 'release-please-config.json'
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'go.work'
+      - 'go.work.sum'
+      - '.github/**'
+      - 'CHANGELOG.md'
+      - '.release-please-manifest.json'
+      - 'release-please-config.json'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+      # The committed go.work links a sibling ../golem checkout that only
+      # exists on a developer's machine; CI resolves the golem modules from
+      # their published versions instead.
+      - run: GOWORK=off go build ./...
+      - run: GOWORK=off go test ./...
+
+  release:
+    if: github.event_name == 'push'
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: googleapis/release-please-action@v4
+        id: release

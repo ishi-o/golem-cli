@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ishi-o/golem-cli/bootstrap"
-	"github.com/ishi-o/golem-cli/cli"
+	"github.com/ishi-o/golem-cli/cmd"
+	"github.com/ishi-o/golem-cli/internal/bootstrap"
 )
 
 func main() {
@@ -32,11 +32,11 @@ func main() {
 		}()
 	}
 
-	var runner cli.Runner
+	var runner cmd.Runner
 	if runtime != nil {
 		runner = runtime.Agent
 	}
-	root := cli.NewRoot(cli.Config{
+	root := cmd.NewRoot(cmd.Config{
 		Runner:  runner,
 		Input:   os.Stdin,
 		Output:  os.Stdout,

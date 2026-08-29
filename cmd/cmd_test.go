@@ -1,11 +1,11 @@
-package cli_test
+package cmd_test
 
 import (
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/ishi-o/golem-cli/cli"
+	"github.com/ishi-o/golem-cli/cmd"
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +31,7 @@ func (*blockingRunner) Cancel(string) bool { return false }
 func TestChatWaitsForRunCompletion(t *testing.T) {
 	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
 	var output strings.Builder
-	root := cli.NewRoot(cli.Config{
+	root := cmd.NewRoot(cmd.Config{
 		Runner:  runner,
 		Output:  &output,
 		UserID:  "test-user",
