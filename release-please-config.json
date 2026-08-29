@@ -4,7 +4,9 @@
     "packages": {
         ".": {
             "package-name": "",
-            "version-file": "cmd/version.txt"
+            "extra-files": [
+                "cmd/version.txt"
+            ]
         }
     }
 }
