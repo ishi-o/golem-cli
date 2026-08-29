@@ -52,7 +52,7 @@ jobs:
         with:
           ref: main
       - uses: ./.github/actions/setup-go
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
 
   build:
