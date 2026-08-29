@@ -1,10 +1,10 @@
 name: setup-go
-description: Set up Go from the workspace's go.work directive, and cache module downloads and the build cache
+description: Set up Go from the module's go.mod directive, and cache module downloads and the build cache
 runs:
   using: composite
   steps:
     - uses: actions/setup-go@v5
       with:
-        go-version-file: go.work
+        go-version-file: go.mod
         cache: true
         cache-dependency-path: '**/go.sum'

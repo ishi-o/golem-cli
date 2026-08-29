@@ -8,8 +8,6 @@ on:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
-      - 'go.work'
-      - 'go.work.sum'
       - '.github/**'
       - 'CHANGELOG.md'
       - '.release-please-manifest.json'
@@ -21,8 +19,6 @@ on:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
-      - 'go.work'
-      - 'go.work.sum'
       - '.github/**'
       - 'CHANGELOG.md'
       - '.release-please-manifest.json'
@@ -39,11 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
-      # The committed go.work links a sibling ../golem checkout that only
-      # exists on a developer's machine; CI resolves the golem modules from
-      # their published versions instead.
-      - run: GOWORK=off go build ./...
-      - run: GOWORK=off go test ./...
+      - run: go build ./...
+      - run: go test ./...
 
   release:
     if: github.event_name == 'push'

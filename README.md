@@ -11,28 +11,3 @@ export OPENAI_MODEL=your-model
 
 go run . chat "hello"
 ```
-
-## Layout
-
-- `main.go` — entry point; loads config, bootstraps the runtime, runs Cobra.
-- `cmd/` — the command tree (chat, cancel, version) and terminal listeners.
-- `internal/bootstrap/` — env-driven runtime assembly: model, SQLite store,
-  sandbox.
-- `docs/` — the [CLI guide](docs/cli.md) and the
-  [configuration reference](docs/configuration.md).
-
-## Local development
-
-`go.work` points at a sibling checkout of `golem`
-(`../golem/core`, `../golem/store/sqlx`, `../golem/sandbox/...`), so edits
-to the library are picked up immediately. Without it (as in CI), the `golem`
-modules resolve from their published versions.
-
-## CI
-
-`.github/workflows/release.yml` runs the tests on every PR and push, and
-lets [release-please](https://github.com/googleapis/release-please) cut
-versioned tags from conventional commits on `main`. Each release gets
-cgo-free binaries for linux, darwin and windows (amd64 and arm64) plus a
-`checksums.txt`, built with `CGO_ENABLED=0` — the SQLite store runs on
-`modernc.org/sqlite`, so no platform toolchain is needed to build or run.
