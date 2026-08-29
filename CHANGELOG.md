@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/ishi-o/golem-cli/compare/github.com/ishi-o/golem-cli-v1.1.0...github.com/ishi-o/golem-cli-v1.1.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **cd:** checkout before gh release upload ([7a9ff88](https://github.com/ishi-o/golem-cli/commit/7a9ff886c59ef87e36db5be26514d840eed6a7e5))
+
 ## [1.1.0](https://github.com/ishi-o/golem-cli/compare/github.com/ishi-o/golem-cli-v1.0.0...github.com/ishi-o/golem-cli-v1.1.0) (2026-08-29)
 
 
