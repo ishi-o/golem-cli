@@ -3,7 +3,7 @@
     "release-type": "go",
     "packages": {
         ".": {
-            "package-name": "golem-cli",
+            "package-name": "",
             "version-file": "cmd/version.txt"
         }
     }
