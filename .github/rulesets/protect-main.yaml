@@ -1,0 +1,34 @@
+rulesets:
+  - name: protect main
+    target: branch
+    enforcement: active
+    conditions:
+      ref_name:
+        include:
+          - '~DEFAULT_BRANCH'
+        exclude: []
+    rules:
+      - type: creation
+      - type: update
+      - type: deletion
+      - type: non_fast_forward
+      - type: required_linear_history
+      - type: pull_request
+        parameters:
+          required_approving_review_count: 1
+    bypass_actors:
+      - actor_id: 5
+        actor_type: RepositoryRole
+        bypass_mode: always
+      - actor_id: 4
+        actor_type: RepositoryRole
+        bypass_mode: always
+      - actor_id: 2
+        actor_type: RepositoryRole
+        bypass_mode: always
+      - actor_id: 29110
+        actor_type: Integration
+        bypass_mode: always
+      - actor_id: 1143301
+        actor_type: Integration
+        bypass_mode: always
