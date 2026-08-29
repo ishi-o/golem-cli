@@ -1,0 +1,9 @@
+go 1.23.0
+
+use (
+	.
+	../golem/core
+	../golem/sandbox/docker
+	../golem/sandbox/kubernetes
+	../golem/store/sqlx
+)
