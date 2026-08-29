@@ -94,7 +94,7 @@ jobs:
             tar -czf "golem-${{ matrix.os }}-${{ matrix.arch }}.tar.gz" "golem${ext}"
           fi
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: golem-${{ matrix.os }}-${{ matrix.arch }}
           path: |
