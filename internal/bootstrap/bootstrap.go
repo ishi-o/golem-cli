@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/compose"
 	cliMCP "github.com/ishi-o/golem-cli/internal/mcp"
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/ishi-o/golem/core/config"
@@ -64,6 +65,7 @@ type options struct {
 	// implementation. The default is a local robfig/cron scheduler.
 	scheduler        schedule.Scheduler
 	withoutScheduler bool
+	toolMiddlewares  []compose.ToolMiddleware
 }
 
 // WithScheduler replaces the default local scheduler with an application
@@ -76,6 +78,19 @@ func WithScheduler(s schedule.Scheduler) Option {
 // embedders that do not want a long-lived scheduler in their process.
 func WithoutScheduler() Option {
 	return func(o *options) { o.withoutScheduler = true }
+}
+
+// WithToolMiddleware adds an Eino tool middleware to every run composed by
+// this runtime. A middleware can use values placed in the per-run context by
+// an agent listener, which keeps presentation concerns out of scheduled
+// background runs.
+func WithToolMiddleware(middleware compose.ToolMiddleware) Option {
+	return func(o *options) {
+		if middleware.Invokable != nil || middleware.Streamable != nil ||
+			middleware.EnhancedInvokable != nil || middleware.EnhancedStreamable != nil {
+			o.toolMiddlewares = append(o.toolMiddlewares, middleware)
+		}
+	}
 }
 
 // New creates the default runtime. The model uses the OpenAI-compatible
@@ -146,7 +161,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Op
 		TrustedHosts: cfg.AI.Tools.MCP.TrustedHosts,
 		Logger:       logger,
 	})
-	provider := tools.NewProvider(cfg, workspaces, backend, mcpBuilder, tools.WithLogger(logger))
+	providerOptions := []tools.ProviderOption{tools.WithLogger(logger)}
+	for _, middleware := range o.toolMiddlewares {
+		providerOptions = append(providerOptions, tools.WithToolMiddleware(middleware))
+	}
+	provider := tools.NewProvider(cfg, workspaces, backend, mcpBuilder, providerOptions...)
 	runtime := &Runtime{db: db, mcpServers: backend.MCPServerConfigs()}
 	ready := false
 	defer func() {

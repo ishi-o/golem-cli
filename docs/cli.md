@@ -54,6 +54,15 @@ conversation. Configuration changes take effect on the next process; MCP
 changes are synchronized to the live SQLX registry and take effect on the next
 session turn.
 
+## Interactive terminal
+
+On a TTY, `run`, `session`, and the default command use a Bubble Tea editor and
+viewport. Enter sends the message; `Ctrl-J` or `Alt-Enter` inserts a newline.
+Tool calls, skills, reasoning, and subagents are foldable: use `Tab`/`Shift-Tab`
+to focus one, `Ctrl-O` to toggle it, and `Alt-O` to toggle all. `PageUp`/
+`PageDown` or `Ctrl-Up`/`Ctrl-Down` scroll the transcript, and `Ctrl-L` returns
+to the latest output.
+
 ## What is wired
 
 - Golem's built-in families (file, memory, skill, todo, ask, publish, clock,
