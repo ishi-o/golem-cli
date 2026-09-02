@@ -21,7 +21,8 @@ func main() {
 	ctx := context.Background()
 	var runtime *bootstrap.Runtime
 	if commandNeedsRuntime(os.Args[1:]) {
-		runtime, err = bootstrap.New(ctx, cfg, logger)
+		runtime, err = bootstrap.New(ctx, cfg, logger,
+			bootstrap.WithToolMiddleware(cmd.ToolRenderingMiddleware()))
 		if err != nil {
 			logger.Error("bootstrap command runtime", "err", err, "config", cfg.String())
 			os.Exit(1)

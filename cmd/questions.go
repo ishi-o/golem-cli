@@ -19,11 +19,19 @@ type terminalQuestions struct {
 func (q terminalQuestions) Ask(_ context.Context, questions []tools.Question) (map[string]string, error) {
 	answers := make(map[string]string, len(questions))
 	for _, question := range questions {
-		_, _ = fmt.Fprintf(q.output, "\n%s\n", question.Question)
-		for i, option := range question.Options {
-			_, _ = fmt.Fprintf(q.output, "  %d) %s\n", i+1, option)
+		if target, ok := q.output.(terminalRenderTarget); ok {
+			target.sendTerminalEvent(terminalEvent{
+				kind:    terminalEventQuestion,
+				text:    question.Question,
+				options: append([]string(nil), question.Options...),
+			})
+		} else {
+			_, _ = fmt.Fprintf(q.output, "\n%s\n", question.Question)
+			for i, option := range question.Options {
+				_, _ = fmt.Fprintf(q.output, "  %d) %s\n", i+1, option)
+			}
+			_, _ = fmt.Fprint(q.output, "> ")
 		}
-		_, _ = fmt.Fprint(q.output, "> ")
 		line, err := q.reader.ReadLine()
 		if err != nil && !errors.Is(err, io.EOF) {
 			return nil, err

@@ -50,6 +50,11 @@ func newRunCommand(config Config) *cobra.Command {
 			if strings.TrimSpace(message) == "" {
 				return errors.New("golem run: message is empty")
 			}
+			if len(args) == 1 {
+				if target, ok := config.Output.(terminalRenderTarget); ok {
+					target.sendTerminalEvent(terminalEvent{kind: terminalEventUser, text: message})
+				}
+			}
 			if sessionID == "" {
 				sessionID = config.Session
 			}
@@ -109,12 +114,6 @@ func runInteractiveSession(config Config, requestPrefix, sessionID string) error
 		}
 	}
 
-	_, _ = fmt.Fprintf(config.Output, "session %s (type /exit to leave)\n", sessionID)
-	if resume {
-		if err := printSessionHistory(config, sessionID); err != nil {
-			return err
-		}
-	}
 	reader, err := newLineReader(config.Input, config.Output, "> ")
 	if err != nil {
 		return fmt.Errorf("golem session: initialize input editor: %w", err)
@@ -123,6 +122,12 @@ func runInteractiveSession(config Config, requestPrefix, sessionID string) error
 	config.reader = reader
 	if reader.Interactive() {
 		config.Output = reader.Output()
+	}
+	_, _ = fmt.Fprintf(config.Output, "session %s (type /exit to leave)\n", sessionID)
+	if resume {
+		if err := printSessionHistory(config, sessionID); err != nil {
+			return err
+		}
 	}
 	for turn := 1; ; {
 		if !reader.Interactive() {
@@ -189,6 +194,10 @@ func printSessionHistory(config Config, sessionID string) error {
 		role := strings.TrimSpace(message.Role)
 		if role == "" {
 			role = "message"
+		}
+		if target, ok := config.Output.(terminalRenderTarget); ok {
+			target.sendTerminalEvent(terminalEvent{kind: terminalEventHistory, role: role, text: message.Content})
+			continue
 		}
 		if _, err := fmt.Fprintf(config.Output, "[%s] %s\n", role, message.Content); err != nil {
 			return err
