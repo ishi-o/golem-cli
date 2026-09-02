@@ -5,14 +5,11 @@ import (
 	"io"
 	"os"
 	"strings"
-
-	"golang.org/x/term"
 )
 
 // lineReader is the small input surface shared by sessions and inline
-// question handlers. The terminal implementation is backed by x/term, which
-// handles raw mode, history, and cursor movement; pipes and tests use the
-// buffered implementation.
+// question handlers. Interactive terminals use the Bubble Tea editor; pipes
+// and tests use the buffered implementation.
 type lineReader interface {
 	ReadLine() (string, error)
 	Output() io.Writer
@@ -44,48 +41,31 @@ func (*bufferedLineReader) Interactive() bool { return false }
 func (*bufferedLineReader) Close() error { return nil }
 
 type terminalLineReader struct {
-	terminal *term.Terminal
-	fd       int
-	state    *term.State
-	closed   bool
+	ui *terminalUI
 }
 
-func (r *terminalLineReader) ReadLine() (string, error) { return r.terminal.ReadLine() }
+func (r *terminalLineReader) ReadLine() (string, error) { return r.ui.readLine() }
 
-func (r *terminalLineReader) Output() io.Writer { return r.terminal }
+func (r *terminalLineReader) Output() io.Writer { return r.ui.writer }
 
 func (*terminalLineReader) Interactive() bool { return true }
 
 func (r *terminalLineReader) Close() error {
-	if r.closed {
+	if r == nil || r.ui == nil {
 		return nil
 	}
-	r.closed = true
-	return term.Restore(r.fd, r.state)
+	return r.ui.close()
 }
-
-type terminalReadWriter struct {
-	input  io.Reader
-	output io.Writer
-}
-
-func (r terminalReadWriter) Read(p []byte) (int, error)  { return r.input.Read(p) }
-func (r terminalReadWriter) Write(p []byte) (int, error) { return r.output.Write(p) }
 
 func newLineReader(input io.Reader, output io.Writer, prompt string) (lineReader, error) {
-	inputFile, inputIsTerminal := terminalInputFile(input)
+	_, inputIsTerminal := terminalInputFile(input)
 	if !inputIsTerminal || !isTerminalWriter(output) {
 		return newBufferedLineReader(input, output), nil
 	}
 
-	state, err := term.MakeRaw(int(inputFile.Fd()))
-	if err != nil {
-		return nil, err
-	}
+	ui := newTerminalUI(input, output)
 	return &terminalLineReader{
-		terminal: term.NewTerminal(terminalReadWriter{input: input, output: output}, prompt),
-		fd:       int(inputFile.Fd()),
-		state:    state,
+		ui: ui,
 	}, nil
 }
 
