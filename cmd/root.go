@@ -27,15 +27,34 @@ type Runner interface {
 	Cancel(requestID string) bool
 }
 
+// DefaultListenerRunner is implemented by golem's Agent. It lets the CLI
+// observe runs that it did not start itself, such as scheduled task firings.
+// It is separate from Runner so existing embedders and test runners remain
+// source-compatible.
+type DefaultListenerRunner interface {
+	AddDefaultListener(agent.ResponseListener)
+}
+
+// QueueRunner is implemented by runners backed by golem v1's Agent. It lets
+// the interactive editor offer a follow-up message to the conversation that
+// is already running instead of starting a second run.
+//
+// It is deliberately separate from Runner so existing embedders and test
+// runners that only provide Fire and Cancel remain source-compatible.
+type QueueRunner interface {
+	FireOrQueue(agent.Request, func() string, string) bool
+}
+
 // SettingsValues is the local configuration surface used by `golem config`.
 // Keeping it small makes it easy for embedders to provide a secure config
 // store of their own.
 type SettingsValues struct {
-	APIKey          string
-	Model           string
-	BaseURL         string
-	SQLitePath      string
-	StorageLocation string
+	APIKey             string
+	Model              string
+	BaseURL            string
+	SQLitePath         string
+	StorageLocation    string
+	TrustedDirectories []string
 }
 
 // SettingsStore supplies the config subcommands without making cmd depend on
@@ -122,11 +141,13 @@ func NewRoot(config Config) *cobra.Command {
 	root.AddCommand(
 		newRunCommand(config),
 		newSessionCommand(config),
+		newDaemonCommand(config),
 		newCancelCommand(config),
 		newConfigCommand(config),
 		newMCPCommand(config),
 		newSkillsCommand(config),
 		newVersionCommand(config.Output),
 	)
+	root.InitDefaultCompletionCmd()
 	return root
 }

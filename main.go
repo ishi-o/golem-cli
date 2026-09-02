@@ -21,6 +21,13 @@ func main() {
 	ctx := context.Background()
 	var runtime *bootstrap.Runtime
 	if commandNeedsRuntime(os.Args[1:]) {
+		cfg, err = bootstrap.PrepareWorkspaceWithPrompt(cfg, func(workspace string) (bool, error) {
+			return cmd.ConfirmWorkspaceTrust(os.Stdin, os.Stdout, workspace)
+		})
+		if err != nil {
+			logger.Error("prepare workspace", "err", err, "config", cfg.String())
+			os.Exit(1)
+		}
 		runtime, err = bootstrap.New(ctx, cfg, logger,
 			bootstrap.WithToolMiddleware(cmd.ToolRenderingMiddleware()))
 		if err != nil {
@@ -68,20 +75,22 @@ func main() {
 					return cmd.SettingsValues{}, err
 				}
 				return cmd.SettingsValues{
-					APIKey:          values.APIKey,
-					Model:           values.Model,
-					BaseURL:         values.BaseURL,
-					SQLitePath:      values.SQLitePath,
-					StorageLocation: values.StorageLocation,
+					APIKey:             values.APIKey,
+					Model:              values.Model,
+					BaseURL:            values.BaseURL,
+					SQLitePath:         values.SQLitePath,
+					StorageLocation:    values.StorageLocation,
+					TrustedDirectories: values.TrustedDirectories,
 				}, nil
 			},
 			Save: func(values cmd.SettingsValues) error {
 				return bootstrap.SaveSettingsValues(bootstrap.SettingsValues{
-					APIKey:          values.APIKey,
-					Model:           values.Model,
-					BaseURL:         values.BaseURL,
-					SQLitePath:      values.SQLitePath,
-					StorageLocation: values.StorageLocation,
+					APIKey:             values.APIKey,
+					Model:              values.Model,
+					BaseURL:            values.BaseURL,
+					SQLitePath:         values.SQLitePath,
+					StorageLocation:    values.StorageLocation,
+					TrustedDirectories: values.TrustedDirectories,
 				})
 			},
 		},
@@ -128,7 +137,7 @@ func commandNeedsRuntime(args []string) bool {
 		return false
 	}
 	switch strings.TrimSpace(args[0]) {
-	case "run", "chat", "cancel":
+	case "run", "chat", "daemon", "cancel":
 		for _, arg := range args[1:] {
 			if arg == "--help" || arg == "-h" {
 				return false

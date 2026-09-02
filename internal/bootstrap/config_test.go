@@ -3,8 +3,10 @@ package bootstrap
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	coreconfig "github.com/ishi-o/golem/core/config"
 	"github.com/ishi-o/golem/core/storage"
 	"github.com/ishi-o/golem/core/store"
 	"github.com/stretchr/testify/require"
@@ -58,6 +60,68 @@ func TestSettingsAndMCPConfigFile(t *testing.T) {
 	servers, err = ListMCPServers()
 	require.NoError(t, err)
 	require.Empty(t, servers)
+}
+
+func TestSettingsDefaultToCurrentDirectory(t *testing.T) {
+	t.Setenv(configFileEnv, filepath.Join(t.TempDir(), "config.json"))
+	t.Setenv("GOLEM_STORAGE_LOCATION", "")
+
+	current, err := os.Getwd()
+	require.NoError(t, err)
+	settings, err := LoadSettings()
+	require.NoError(t, err)
+	require.Equal(t, current, settings.Config.Storage.Location)
+}
+
+func TestWorkspaceTrustIsPersisted(t *testing.T) {
+	t.Setenv(configFileEnv, filepath.Join(t.TempDir(), "config.json"))
+	workspace := t.TempDir()
+	var prompt strings.Builder
+
+	require.NoError(t, EnsureWorkspaceTrusted(workspace, strings.NewReader("yes\n"), &prompt))
+	require.Contains(t, prompt.String(), "Trust this workspace?")
+
+	values, err := LoadSettingsValues()
+	require.NoError(t, err)
+	canonicalWorkspace, err := normalizeDirectory(workspace)
+	require.NoError(t, err)
+	require.Contains(t, values.TrustedDirectories, canonicalWorkspace)
+
+	prompt.Reset()
+	require.NoError(t, EnsureWorkspaceTrusted(workspace, strings.NewReader("no\n"), &prompt))
+	require.Empty(t, prompt.String())
+}
+
+func TestPrepareWorkspaceAddsCurrentDirectoryToPrompt(t *testing.T) {
+	t.Setenv(configFileEnv, filepath.Join(t.TempDir(), "config.json"))
+	workspace := t.TempDir()
+
+	cfg, err := PrepareWorkspaceWithPrompt(configForLocation(workspace), func(string) (bool, error) {
+		return true, nil
+	})
+	require.NoError(t, err)
+	canonicalWorkspace, err := normalizeDirectory(workspace)
+	require.NoError(t, err)
+	require.Equal(t, canonicalWorkspace, cfg.Storage.Location)
+	require.Contains(t, cfg.AI.SystemPrompt, canonicalWorkspace)
+	require.Contains(t, cfg.AI.SystemPrompt, "ListFiles")
+	require.Contains(t, cfg.AI.SystemPrompt, "use . for its root")
+}
+
+func TestWorkspaceTrustRejectsNonInteractiveInput(t *testing.T) {
+	t.Setenv(configFileEnv, filepath.Join(t.TempDir(), "config.json"))
+	workspace := t.TempDir()
+	reader, writer, err := os.Pipe()
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	defer reader.Close()
+
+	_, err = PrepareWorkspace(configForLocation(workspace), reader, &strings.Builder{})
+	require.ErrorContains(t, err, "not trusted")
+}
+
+func configForLocation(location string) coreconfig.Config {
+	return coreconfig.Config{Storage: coreconfig.Storage{Location: location}}
 }
 
 func TestConfigPathUsesXDGStyleDefault(t *testing.T) {

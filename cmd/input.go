@@ -17,6 +17,17 @@ type lineReader interface {
 	Close() error
 }
 
+// submitHandlerReader is implemented by interactive readers that can route a
+// submission directly to the live agent run. Buffered readers intentionally
+// do not implement it: their caller consumes the next line synchronously.
+type submitHandlerReader interface {
+	SetSubmitHandler(func(string) bool)
+}
+
+type lineSubmitter interface {
+	submitLine(string)
+}
+
 type bufferedLineReader struct {
 	reader *bufio.Reader
 	output io.Writer
@@ -45,6 +56,20 @@ type terminalLineReader struct {
 }
 
 func (r *terminalLineReader) ReadLine() (string, error) { return r.ui.readLine() }
+
+func (r *terminalLineReader) SetSubmitHandler(handler func(string) bool) {
+	if r == nil || r.ui == nil {
+		return
+	}
+	r.ui.setSubmitHandler(handler)
+}
+
+func (r *terminalLineReader) submitLine(line string) {
+	if r == nil || r.ui == nil {
+		return
+	}
+	r.ui.submitLine(line)
+}
 
 func (r *terminalLineReader) Output() io.Writer { return r.ui.writer }
 

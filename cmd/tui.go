@@ -40,6 +40,7 @@ const (
 	terminalEventError
 	terminalEventFinished
 	terminalEventStatus
+	terminalEventScheduled
 )
 
 // terminalEvent is the structured bridge between Golem callbacks and the
@@ -79,6 +80,10 @@ type terminalLineResult struct {
 	err  error
 }
 
+type terminalSubmitHandlerMsg struct {
+	handler func(string) bool
+}
+
 // terminalUI is the lifetime of one interactive terminal. It stays alive
 // while a request is running, so listener events can update the same view
 // that owns the input editor.
@@ -95,12 +100,15 @@ type terminalUI struct {
 }
 
 func newTerminalUI(input io.Reader, output io.Writer) *terminalUI {
-	lines := make(chan terminalLineResult, 1)
+	// A short buffer also covers input submitted during the tiny hand-off
+	// between the first message and installing the live-run handler.
+	lines := make(chan terminalLineResult, 16)
 	model := newTerminalModel(lines)
 	program := tea.NewProgram(model,
 		tea.WithInput(input),
 		tea.WithOutput(output),
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 	)
 	ui := &terminalUI{
 		program: program,
@@ -131,6 +139,23 @@ func (u *terminalUI) sendTerminalEvent(event terminalEvent) {
 		return
 	}
 	u.program.Send(event)
+}
+
+func (u *terminalUI) setSubmitHandler(handler func(string) bool) {
+	if u == nil || u.program == nil {
+		return
+	}
+	u.program.Send(terminalSubmitHandlerMsg{handler: handler})
+}
+
+func (u *terminalUI) submitLine(line string) {
+	if u == nil {
+		return
+	}
+	select {
+	case u.lines <- terminalLineResult{line: line}:
+	case <-u.done:
+	}
 }
 
 func (u *terminalUI) readLine() (string, error) {
@@ -180,6 +205,7 @@ const (
 	terminalBlockUser
 	terminalBlockQuestion
 	terminalBlockAnswer
+	terminalBlockScheduled
 	terminalBlockReasoning
 	terminalBlockTool
 	terminalBlockSkill
@@ -199,6 +225,8 @@ type terminalBlock struct {
 	footer    string
 	model     string
 	usage     *schema.TokenUsage
+	options   []string
+	selected  int
 
 	collapsed bool
 	done      bool
@@ -221,12 +249,16 @@ type terminalModel struct {
 	tools          map[string]int
 	focusIndex     int
 
-	modelName      string
-	usage          *schema.TokenUsage
-	usageModel     string
-	status         string
-	busy           bool
-	questionActive bool
+	modelName       string
+	usage           *schema.TokenUsage
+	usageModel      string
+	status          string
+	busy            bool
+	questionActive  bool
+	questionIndex   int
+	questionOptions []string
+	questionChoice  int
+	submitHandler   func(string) bool
 
 	markdown       *glamour.TermRenderer
 	markdownWidth  int
@@ -236,7 +268,10 @@ type terminalModel struct {
 func newTerminalModel(lines chan terminalLineResult) *terminalModel {
 	input := textarea.New()
 	input.Placeholder = "Ask golem anything…"
-	input.Prompt = "  › "
+	// The textarea renders its Prompt before every visual line. Keep it empty
+	// and put one prompt marker in the input header so multiline input does not
+	// become a column of repeated markers.
+	input.Prompt = ""
 	input.ShowLineNumbers = false
 	input.SetHeight(3)
 	input.KeyMap.InsertNewline.SetKeys("ctrl+j", "alt+enter")
@@ -262,6 +297,8 @@ func newTerminalModel(lines chan terminalLineResult) *terminalModel {
 		tools:          make(map[string]int),
 		focusIndex:     -1,
 		status:         "ready",
+		questionIndex:  -1,
+		questionChoice: -1,
 	}
 }
 
@@ -281,6 +318,13 @@ func (m *terminalModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyEvent(msg)
 		m.rebuildViewport()
 		return m, nil
+	case terminalSubmitHandlerMsg:
+		m.submitHandler = msg.handler
+		return m, nil
+	case tea.MouseMsg:
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	default:
@@ -294,26 +338,20 @@ func (m *terminalModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
+	}
+	if m.questionActive && len(m.questionOptions) > 0 {
+		return m.updateQuestionKey(msg)
+	}
+	switch msg.String() {
 	case "enter":
-		if m.busy && !m.questionActive {
+		if m.busy && !m.questionActive && m.submitHandler == nil {
 			return m, nil
 		}
 		line := m.input.Value()
 		if strings.TrimSpace(line) == "" {
 			return m, nil
 		}
-		m.appendUser(line)
-		if m.questionActive {
-			m.questionActive = false
-			m.status = "thinking"
-			m.input.Blur()
-		}
-		m.input.Reset()
-		m.rebuildViewport()
-		return m, func() tea.Msg {
-			m.lines <- terminalLineResult{line: line}
-			return nil
-		}
+		return m, m.submitInput(line)
 	case "ctrl+o":
 		m.toggleFocusedFold()
 		m.rebuildViewport()
@@ -350,12 +388,94 @@ func (m *terminalModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, nil
 	}
-	if m.busy && !m.questionActive {
+	if m.busy && !m.questionActive && m.submitHandler == nil {
 		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func (m *terminalModel) updateQuestionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		m.moveQuestionChoice(-1)
+		m.rebuildViewport()
+		return m, nil
+	case "down", "j":
+		m.moveQuestionChoice(1)
+		m.rebuildViewport()
+		return m, nil
+	case "home":
+		m.questionChoice = 0
+		m.syncQuestionChoice()
+		m.rebuildViewport()
+		return m, nil
+	case "end":
+		m.questionChoice = len(m.questionOptions) - 1
+		m.syncQuestionChoice()
+		m.rebuildViewport()
+		return m, nil
+	case "enter":
+		if m.questionChoice < 0 || m.questionChoice >= len(m.questionOptions) {
+			return m, nil
+		}
+		if m.questionIndex >= 0 && m.questionIndex < len(m.blocks) {
+			m.blocks[m.questionIndex].selected = m.questionChoice
+			m.blocks[m.questionIndex].done = true
+		}
+		return m, m.submitInput(m.questionOptions[m.questionChoice])
+	}
+	return m, nil
+}
+
+func (m *terminalModel) moveQuestionChoice(delta int) {
+	if len(m.questionOptions) == 0 {
+		return
+	}
+	if m.questionChoice < 0 {
+		m.questionChoice = 0
+	}
+	m.questionChoice = (m.questionChoice + delta) % len(m.questionOptions)
+	if m.questionChoice < 0 {
+		m.questionChoice += len(m.questionOptions)
+	}
+	m.syncQuestionChoice()
+}
+
+func (m *terminalModel) syncQuestionChoice() {
+	if m.questionIndex >= 0 && m.questionIndex < len(m.blocks) {
+		m.blocks[m.questionIndex].selected = m.questionChoice
+	}
+}
+
+func (m *terminalModel) submitInput(line string) tea.Cmd {
+	m.appendUser(line)
+	handled := false
+	if !m.questionActive && m.submitHandler != nil {
+		handled = m.submitHandler(line)
+	}
+	if m.questionActive {
+		m.questionActive = false
+		m.status = "thinking"
+		if m.submitHandler == nil {
+			m.input.Blur()
+		} else {
+			m.input.Focus()
+		}
+		m.questionIndex = -1
+		m.questionOptions = nil
+		m.questionChoice = -1
+	}
+	m.input.Reset()
+	m.rebuildViewport()
+	if handled {
+		return nil
+	}
+	return func() tea.Msg {
+		m.lines <- terminalLineResult{line: line}
+		return nil
+	}
 }
 
 func (m *terminalModel) View() string {
@@ -373,12 +493,24 @@ func (m *terminalModel) View() string {
 		body = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "245", Dark: "243"}).Render("No messages yet. Start a conversation below.")
 	}
 
-	inputTitle := "message"
-	if m.busy {
-		inputTitle = "working…"
+	inputTitle := "› message"
+	if m.busy && m.submitHandler != nil {
+		inputTitle = "› queue message"
+	} else if m.busy {
+		inputTitle = "› working…"
+	}
+	if m.questionActive {
+		if len(m.questionOptions) > 0 {
+			inputTitle = "› choose an option"
+		} else {
+			inputTitle = "› answer"
+		}
 	}
 	inputTitle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "62", Dark: "86"}).Render(inputTitle)
-	inputBody := lipgloss.JoinVertical(lipgloss.Left, inputTitle, m.input.View())
+	inputBody := inputTitle
+	if len(m.questionOptions) == 0 {
+		inputBody = lipgloss.JoinVertical(lipgloss.Left, inputTitle, m.input.View())
+	}
 	inputBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.AdaptiveColor{Light: "62", Dark: "62"}).
@@ -387,6 +519,12 @@ func (m *terminalModel) View() string {
 		Render(inputBody)
 
 	footerParts := []string{"enter send", "ctrl+j newline", "tab focus", "ctrl+o fold", "pgup/pgdn scroll"}
+	if m.busy && !m.questionActive && m.submitHandler != nil {
+		footerParts[0] = "enter queue"
+	}
+	if m.questionActive && len(m.questionOptions) > 0 {
+		footerParts = []string{"↑/↓ choose", "enter select", "j/k choose"}
+	}
 	if m.modelName != "" {
 		footerParts = append(footerParts, "model "+m.modelName)
 	}
@@ -407,19 +545,35 @@ func (m *terminalModel) applyEvent(event terminalEvent) {
 	case terminalEventUser:
 		m.appendUser(event.text)
 	case terminalEventQuestion:
-		m.appendBlock(terminalBlock{
-			kind:    terminalBlockQuestion,
-			title:   "question",
-			body:    event.text,
-			details: questionOptions(event.options),
-			done:    true,
+		options := cleanQuestionOptions(event.options)
+		index := m.appendBlock(terminalBlock{
+			kind:     terminalBlockQuestion,
+			title:    "question",
+			body:     event.text,
+			details:  questionOptions(options),
+			options:  options,
+			selected: -1,
+			done:     len(options) == 0,
 		})
+		m.questionIndex = index
+		m.questionOptions = options
+		m.questionChoice = -1
 		m.questionActive = true
 		m.status = "waiting for input"
-		m.input.Focus()
+		m.input.Reset()
+		if len(options) > 0 {
+			m.questionChoice = 0
+			m.syncQuestionChoice()
+			m.input.Blur()
+		} else {
+			m.input.Focus()
+		}
 	case terminalEventReady:
 		m.busy = true
 		m.questionActive = false
+		m.questionIndex = -1
+		m.questionOptions = nil
+		m.questionChoice = -1
 		m.status = "thinking"
 		m.answerIndex = -1
 		m.reasoningIndex = -1
@@ -428,7 +582,11 @@ func (m *terminalModel) applyEvent(event terminalEvent) {
 		m.modelName = ""
 		m.usage = nil
 		m.usageModel = ""
-		m.input.Blur()
+		if m.submitHandler == nil {
+			m.input.Blur()
+		} else {
+			m.input.Focus()
+		}
 	case terminalEventModel:
 		m.modelName = strings.TrimSpace(event.model)
 		m.status = "generating"
@@ -480,6 +638,9 @@ func (m *terminalModel) applyEvent(event terminalEvent) {
 		m.reasoningIndex = -1
 		m.subagents = make(map[string]int)
 		m.tools = make(map[string]int)
+		m.questionIndex = -1
+		m.questionOptions = nil
+		m.questionChoice = -1
 		m.input.Focus()
 	case terminalEventFinished:
 		if m.answerIndex >= 0 {
@@ -498,10 +659,48 @@ func (m *terminalModel) applyEvent(event terminalEvent) {
 		}
 		m.subagents = make(map[string]int)
 		m.tools = make(map[string]int)
+		m.questionIndex = -1
+		m.questionOptions = nil
+		m.questionChoice = -1
 		m.input.Focus()
 	case terminalEventStatus:
 		m.appendNotice("event", event.text)
+	case terminalEventScheduled:
+		status := strings.ToLower(strings.TrimSpace(string(event.outcome)))
+		if status == "" {
+			status = "finished"
+		}
+		title := "scheduled"
+		if taskID := strings.TrimSpace(event.requestID); taskID != "" {
+			title += " · " + taskID
+		}
+		body := strings.TrimSpace(event.text)
+		if event.err != "" {
+			if body != "" {
+				body += "\n\n"
+			}
+			body += "error: " + event.err
+		}
+		if body == "" {
+			body = "task " + roleOrDefault(event.requestID, "unknown") + " " + status
+		}
+		m.appendBlock(terminalBlock{
+			kind:   terminalBlockScheduled,
+			title:  title,
+			body:   body,
+			footer: scheduledFooter(status, event.model, event.usage),
+			failed: event.err != "" || status == "failed" || status == "cancelled",
+			done:   true,
+		})
 	}
+}
+
+func scheduledFooter(status, model string, usage *schema.TokenUsage) string {
+	footer := strings.TrimSpace(status)
+	if usageSummary := usageFooter(model, usage); usageSummary != "" {
+		footer += " · " + usageSummary
+	}
+	return footer
 }
 
 func (m *terminalModel) appendUser(line string) {
@@ -790,18 +989,31 @@ func (m *terminalModel) renderBlock(index int, block terminalBlock) string {
 			Padding(0, 1).
 			Width(maxInt(1, m.width-2)).
 			Render(lipgloss.JoinVertical(lipgloss.Left, label, body))
+	case terminalBlockScheduled:
+		color := lipgloss.AdaptiveColor{Light: "130", Dark: "222"}
+		if block.failed {
+			color = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
+		}
+		label := lipgloss.NewStyle().Bold(true).Foreground(color).Render("⏰ " + block.title)
+		if block.footer != "" {
+			label = lipgloss.JoinHorizontal(lipgloss.Bottom, label, "  ",
+				lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "245", Dark: "243"}).Render(block.footer))
+		}
+		body := m.renderMarkdown(block.body, contentWidth)
+		if body == "" {
+			return label
+		}
+		return lipgloss.NewStyle().
+			BorderLeft(true).
+			BorderForeground(color).
+			PaddingLeft(2).
+			Render(lipgloss.JoinVertical(lipgloss.Left, label, body))
 	case terminalBlockUser:
 		label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "35", Dark: "78"}).Render("you")
 		body := lipgloss.NewStyle().Foreground(terminalBodyColor).Render(block.body)
 		return lipgloss.NewStyle().BorderLeft(true).BorderForeground(lipgloss.AdaptiveColor{Light: "35", Dark: "78"}).PaddingLeft(2).Render(lipgloss.JoinVertical(lipgloss.Left, label, body))
 	case terminalBlockQuestion:
-		label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "62", Dark: "86"}).Render("? question")
-		body := lipgloss.NewStyle().Foreground(terminalBodyColor).Render(block.body)
-		content := lipgloss.JoinVertical(lipgloss.Left, label, body)
-		if block.details != "" {
-			content = lipgloss.JoinVertical(lipgloss.Left, content, lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "110", Dark: "250"}).Render(block.details))
-		}
-		return lipgloss.NewStyle().BorderLeft(true).BorderForeground(lipgloss.AdaptiveColor{Light: "62", Dark: "86"}).PaddingLeft(2).Render(content)
+		return m.renderQuestion(index, block)
 	case terminalBlockReasoning:
 		return m.renderFoldable(index, block, "◇", "reasoning", lipgloss.AdaptiveColor{Light: "136", Dark: "221"}, m.renderMarkdown(block.body, contentWidth))
 	case terminalBlockTool:
@@ -821,6 +1033,38 @@ func (m *terminalModel) renderBlock(index int, block terminalBlock) string {
 	default:
 		return ""
 	}
+}
+
+func (m *terminalModel) renderQuestion(index int, block terminalBlock) string {
+	label := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "62", Dark: "86"}).Render("? question")
+	body := lipgloss.NewStyle().Foreground(terminalBodyColor).Render(block.body)
+	parts := []string{label, body}
+	if len(block.options) > 0 {
+		for optionIndex, option := range block.options {
+			active := m.questionActive && m.questionIndex == index && m.questionChoice == optionIndex
+			selected := block.selected == optionIndex
+			marker := "  "
+			if active {
+				marker = "❯ "
+			} else if selected {
+				marker = "✓ "
+			}
+			style := lipgloss.NewStyle().Foreground(terminalBodyColor)
+			if active {
+				style = style.Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "62", Dark: "86"})
+			} else if selected {
+				style = style.Foreground(lipgloss.AdaptiveColor{Light: "35", Dark: "78"})
+			}
+			parts = append(parts, style.Render(fmt.Sprintf("%s%d. %s", marker, optionIndex+1, option)))
+		}
+		if m.questionActive && m.questionIndex == index {
+			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "110", Dark: "250"}).Render("↑/↓ choose · Enter select"))
+		}
+	} else if block.details != "" {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "110", Dark: "250"}).Render(block.details))
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.NewStyle().BorderLeft(true).BorderForeground(lipgloss.AdaptiveColor{Light: "62", Dark: "86"}).PaddingLeft(2).Render(content)
 }
 
 func (m *terminalModel) renderFoldable(index int, block terminalBlock, icon, title string, color lipgloss.TerminalColor, body string) string {
@@ -925,6 +1169,16 @@ func questionOptions(options []string) string {
 		lines = append(lines, fmt.Sprintf("%d. %s", index+1, option))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func cleanQuestionOptions(options []string) []string {
+	cleaned := make([]string, 0, len(options))
+	for _, option := range options {
+		if option = strings.TrimSpace(option); option != "" {
+			cleaned = append(cleaned, option)
+		}
+	}
+	return cleaned
 }
 
 func prettyJSONOrText(value string) string {
