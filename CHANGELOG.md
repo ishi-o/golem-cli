@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/ishi-o/golem-cli/compare/v1.4.0...v1.5.0) (2026-09-02)
+
+
+### Features
+
+* improve terminal rendering with Charm UI ([#15](https://github.com/ishi-o/golem-cli/issues/15)) ([086c4e6](https://github.com/ishi-o/golem-cli/commit/086c4e6a6b6ae2a54891308cc5c8a13afbd258c5))
+
 ## [1.4.0](https://github.com/ishi-o/golem-cli/compare/v1.3.0...v1.4.0) (2026-09-02)
 
 
