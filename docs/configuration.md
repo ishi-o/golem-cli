@@ -36,7 +36,7 @@ instead of approving it silently.
 | Variable | Purpose |
 | --- | --- |
 | `GOLEM_LOCALE` | Language used by agent-generated runtime messages |
-| `GOLEM_STORAGE_LOCATION` | Root directory for user workspaces; defaults to the current directory |
+| `GOLEM_STORAGE_LOCATION` | Trusted project directory used as the local workspace; defaults to the current directory |
 | `GOLEM_STORAGE_BASE_URL` | Base URL for published files |
 | `GOLEM_STORAGE_CDN_URL` | Optional CDN base URL for published files |
 | `GOLEM_ADMINS` | Comma-separated administrator IDs |
@@ -73,6 +73,12 @@ variables) fails startup rather than silently offering nothing.
 
 Docker sandboxes additionally honour the standard Docker environment
 (`DOCKER_HOST`, TLS variables).
+
+After workspace trust is granted, the CLI creates the ignored
+`.golem/runtime/local` symlink to the project directory. This is the owner
+home path expected by Golem v1 and lets Docker mount the trusted project as
+the sandbox working directory. The existing `<workspace>/local` directory, if
+present, is left untouched.
 
 The CLI starts a local scheduler automatically, so the schedule tools are
 available without another service. The scheduler is process-local: keep

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/ishi-o/golem/core/storage"
 	"github.com/ishi-o/golem/core/tools"
 )
 
@@ -23,7 +22,15 @@ func ListSkills(ownerID string) ([]SkillInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	home := storage.NewWorkspaceFactory(settings.Config.Storage.Location).ForOwner(ownerID)
+	workspace, err := normalizeDirectory(settings.Config.Storage.Location)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: resolve skills workspace: %w", err)
+	}
+	// The CLI has one trusted project workspace. ownerID stays in the public
+	// helper signature for compatibility with embedders, while the Golem
+	// SkillTools itself receives the actual project-root home.
+	_ = ownerID
+	home := cliWorkspaceHome{root: workspace}
 	skillTools, err := tools.NewSkillTools(home)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: create skill tools: %w", err)

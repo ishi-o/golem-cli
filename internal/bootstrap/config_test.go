@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	coreconfig "github.com/ishi-o/golem/core/config"
-	"github.com/ishi-o/golem/core/storage"
 	"github.com/ishi-o/golem/core/store"
 	"github.com/stretchr/testify/require"
 )
@@ -106,6 +105,14 @@ func TestPrepareWorkspaceAddsCurrentDirectoryToPrompt(t *testing.T) {
 	require.Contains(t, cfg.AI.SystemPrompt, canonicalWorkspace)
 	require.Contains(t, cfg.AI.SystemPrompt, "ListFiles")
 	require.Contains(t, cfg.AI.SystemPrompt, "use . for its root")
+	require.Contains(t, cfg.AI.SystemPrompt, "shell sandbox starts in this same project root")
+	link := filepath.Join(canonicalWorkspace, filepath.FromSlash(workspaceRuntimeDir), localOwnerID)
+	linkInfo, err := os.Lstat(link)
+	require.NoError(t, err)
+	require.True(t, linkInfo.Mode()&os.ModeSymlink != 0)
+	resolvedLink, err := filepath.EvalSymlinks(link)
+	require.NoError(t, err)
+	require.Equal(t, canonicalWorkspace, resolvedLink)
 }
 
 func TestWorkspaceTrustRejectsNonInteractiveInput(t *testing.T) {
@@ -137,8 +144,8 @@ func TestListSkillsUsesGolemWorkspaceTools(t *testing.T) {
 	t.Setenv(configFileEnv, configPath)
 	t.Setenv("GOLEM_STORAGE_LOCATION", storageRoot)
 
-	home := storage.NewWorkspaceFactory(storageRoot).ForOwner("local")
-	skillsDir, err := home.Folder(storage.FolderSkills)
+	skillsDir := filepath.Join(storageRoot, "skills")
+	err := os.MkdirAll(skillsDir, 0o755)
 	require.NoError(t, err)
 	skillDir := filepath.Join(skillsDir, "release")
 	require.NoError(t, os.MkdirAll(skillDir, 0o755))

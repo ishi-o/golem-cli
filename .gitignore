@@ -3,6 +3,7 @@
 /data/
 /.env
 /dist/
+.golem/
 *.db
 *.db-wal
 *.db-shm

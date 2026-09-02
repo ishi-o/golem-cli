@@ -19,7 +19,6 @@ import (
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/ishi-o/golem/core/config"
 	"github.com/ishi-o/golem/core/schedule"
-	"github.com/ishi-o/golem/core/storage"
 	"github.com/ishi-o/golem/core/store"
 	"github.com/ishi-o/golem/core/subagent"
 	"github.com/ishi-o/golem/core/tools"
@@ -122,6 +121,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Op
 	if modelName == "" {
 		return nil, fmt.Errorf("bootstrap: %s is required", modelEnv)
 	}
+	workspace, err := normalizeDirectory(cfg.Storage.Location)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: resolve workspace: %w", err)
+	}
+	cfg.Storage.Location = workspace
+	workspaces, err := workspaceFactory(workspace)
+	if err != nil {
+		return nil, err
+	}
 
 	chatModel, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		APIKey:  apiKey,
@@ -155,7 +163,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Op
 		return nil, err
 	}
 
-	workspaces := storage.NewWorkspaceFactory(cfg.Storage.Location)
 	mcpBuilder := cliMCP.New(cliMCP.Config{
 		Servers:      backend.MCPServerConfigs(),
 		TrustedHosts: cfg.AI.Tools.MCP.TrustedHosts,
@@ -165,6 +172,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Op
 	for _, middleware := range o.toolMiddlewares {
 		providerOptions = append(providerOptions, tools.WithToolMiddleware(middleware))
 	}
+	workspaceMiddleware, err := workspaceToolsMiddleware(workspace, backend, cfg.AI.Tools.PublishFile.BaseURL)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	// Keep this adapter after caller middleware so terminal renderers remain
+	// the outer hook even when a workspace tool is handled locally.
+	providerOptions = append(providerOptions, tools.WithToolMiddleware(workspaceMiddleware))
 	provider := tools.NewProvider(cfg, workspaces, backend, mcpBuilder, providerOptions...)
 	runtime := &Runtime{db: db, mcpServers: backend.MCPServerConfigs()}
 	ready := false

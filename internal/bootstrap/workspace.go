@@ -9,6 +9,12 @@ import (
 	"strings"
 
 	coreconfig "github.com/ishi-o/golem/core/config"
+	"github.com/ishi-o/golem/core/storage"
+)
+
+const (
+	localOwnerID        = "local"
+	workspaceRuntimeDir = ".golem/runtime"
 )
 
 // PrepareWorkspace resolves the runtime workspace and asks for permission the
@@ -32,9 +38,85 @@ func PrepareWorkspaceWithPrompt(cfg coreconfig.Config, prompt func(string) (bool
 	if err := ensureWorkspaceTrusted(workspace, prompt); err != nil {
 		return cfg, err
 	}
+	if _, err := workspaceFactory(workspace); err != nil {
+		return cfg, err
+	}
 	cfg.Storage.Location = workspace
 	cfg.AI.SystemPrompt = workspaceSystemPrompt(cfg.AI.SystemPrompt, workspace)
 	return cfg, nil
+}
+
+// workspaceFactory returns the factory used by golem's per-owner tools. The
+// core factory deliberately appends the owner id to its location, while the
+// CLI has one local owner whose home must be the trusted project directory so
+// Docker can mount that directory as the sandbox's working tree.
+//
+// The owner path is kept under .golem so an older real <workspace>/local
+// directory is never replaced or hidden. The symlink is intentionally made
+// only after the directory has been trusted by the caller.
+func workspaceFactory(workspace string) (*storage.WorkspaceFactory, error) {
+	var err error
+	workspace, err = normalizeDirectory(workspace)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: resolve workspace runtime root: %w", err)
+	}
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		return nil, fmt.Errorf("bootstrap: create workspace: %w", err)
+	}
+	metadataRoot := filepath.Join(workspace, ".golem")
+	if err := ensureWorkspaceDirectory(metadataRoot); err != nil {
+		return nil, err
+	}
+	runtimeRoot := filepath.Join(workspace, filepath.FromSlash(workspaceRuntimeDir))
+	if err := ensureWorkspaceDirectory(runtimeRoot); err != nil {
+		return nil, err
+	}
+	ownerRoot := filepath.Join(runtimeRoot, localOwnerID)
+	if err := ensureWorkspaceLink(ownerRoot, workspace); err != nil {
+		return nil, err
+	}
+	return storage.NewWorkspaceFactory(runtimeRoot), nil
+}
+
+func ensureWorkspaceDirectory(directory string) error {
+	info, err := os.Lstat(directory)
+	if os.IsNotExist(err) {
+		if err := os.Mkdir(directory, 0o755); err != nil {
+			return fmt.Errorf("bootstrap: create workspace runtime directory %q: %w", directory, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("bootstrap: inspect workspace runtime directory %q: %w", directory, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("bootstrap: workspace runtime directory %q must be a real directory", directory)
+	}
+	return nil
+}
+
+func ensureWorkspaceLink(link, target string) error {
+	info, err := os.Lstat(link)
+	if os.IsNotExist(err) {
+		if err := os.Symlink(target, link); err != nil {
+			return fmt.Errorf("bootstrap: link workspace runtime %q to %q: %w", link, target, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("bootstrap: inspect workspace runtime %q: %w", link, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("bootstrap: workspace runtime path %q already exists and is not the expected symlink", link)
+	}
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		return fmt.Errorf("bootstrap: resolve workspace runtime link %q: %w", link, err)
+	}
+	if filepath.Clean(resolved) != filepath.Clean(target) {
+		return fmt.Errorf("bootstrap: workspace runtime link %q points to %q, expected %q", link, resolved, target)
+	}
+	return nil
 }
 
 func resolveWorkspace(cfg coreconfig.Config) (coreconfig.Config, string, error) {
@@ -126,6 +208,7 @@ func workspaceSystemPrompt(systemPrompt, workspace string) string {
 	instructions := fmt.Sprintf(`%s
 - The current CLI workspace is %q.
 - Treat it as the project root. For ListFiles, ReadFile, WriteFile, and GrepFiles, pass paths relative to this directory; use . for its root.
+- The shell sandbox starts in this same project root and sees the same files.
 - Keep file, skill, and sandbox operations inside this workspace unless the user explicitly asks otherwise.`, marker, displayPath)
 	if base == "" {
 		return instructions
