@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/ishi-o/golem-cli/compare/v1.5.0...v1.5.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* **cronjob:** fix the cronjob that run silently ([#17](https://github.com/ishi-o/golem-cli/issues/17)) ([b379ba1](https://github.com/ishi-o/golem-cli/commit/b379ba1fb25e0d587459f72bfd69374caa03fd8f))
+
 ## [1.5.0](https://github.com/ishi-o/golem-cli/compare/v1.4.0...v1.5.0) (2026-09-02)
 
 
