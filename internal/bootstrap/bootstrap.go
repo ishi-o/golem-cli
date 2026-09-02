@@ -14,10 +14,13 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
+	cliMCP "github.com/ishi-o/golem-cli/internal/mcp"
 	"github.com/ishi-o/golem/core/agent"
 	"github.com/ishi-o/golem/core/config"
 	"github.com/ishi-o/golem/core/schedule"
 	"github.com/ishi-o/golem/core/storage"
+	"github.com/ishi-o/golem/core/store"
+	"github.com/ishi-o/golem/core/subagent"
 	"github.com/ishi-o/golem/core/tools"
 	sqlxstore "github.com/ishi-o/golem/store/sqlx"
 	"github.com/jmoiron/sqlx"
@@ -39,30 +42,40 @@ const (
 // Runtime owns the resources created for an application process.
 type Runtime struct {
 	Agent *agent.Agent
-	// Runner fires the user's scheduled tasks; nil when no scheduler was
-	// injected, in which case the schedule tools are not offered.
+	// Runner fires the user's scheduled tasks.
 	Runner *schedule.Runner
-	// sandbox is the env-selected shell sandbox (GOLEM_SANDBOX); nil when
-	// off. The Docker backend's Close removes its containers; the
-	// Kubernetes one owns Job lifetime and closes as a no-op.
+	// sandbox is the env-selected shell sandbox (GOLEM_SANDBOX); nil when off.
+	// The Docker backend's Close removes its containers.
 	sandbox tools.Sandbox
 	db      *sqlx.DB
+	// mcpServers is the same SQLX repository used by the live agent. Keeping
+	// it here lets management commands inside a session take effect on the
+	// next turn instead of waiting for a process restart.
+	mcpServers store.MCPServerConfigStore
+	// scheduler is owned only when the CLI created the local implementation.
+	scheduler *localScheduler
 }
 
 // Option configures the runtime during construction.
 type Option func(*options)
 
 type options struct {
-	// Scheduler arms the scheduled tasks; core ships none, so an
-	// application wanting scheduled tasks wraps its scheduler library
-	// (gocron, robfig/cron, ...) in the schedule.Scheduler interface and
-	// passes it here.
-	scheduler schedule.Scheduler
+	// Scheduler lets an embedding application replace the CLI's local cron
+	// implementation. The default is a local robfig/cron scheduler.
+	scheduler        schedule.Scheduler
+	withoutScheduler bool
 }
 
-// WithScheduler enables the scheduled-task feature over one scheduler.
+// WithScheduler replaces the default local scheduler with an application
+// supplied implementation.
 func WithScheduler(s schedule.Scheduler) Option {
 	return func(o *options) { o.scheduler = s }
+}
+
+// WithoutScheduler disables schedule tools. This is primarily useful to
+// embedders that do not want a long-lived scheduler in their process.
+func WithoutScheduler() Option {
+	return func(o *options) { o.withoutScheduler = true }
 }
 
 // New creates the default runtime. The model uses the OpenAI-compatible
@@ -82,11 +95,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Op
 		return nil, fmt.Errorf("bootstrap: normalize config: %w", err)
 	}
 
-	apiKey := strings.TrimSpace(os.Getenv(apiKeyEnv))
+	settings, err := LoadSettings()
+	if err != nil {
+		return nil, err
+	}
+	apiKey := firstNonEmpty(os.Getenv(apiKeyEnv), settings.APIKey)
 	if apiKey == "" {
 		return nil, fmt.Errorf("bootstrap: %s is required", apiKeyEnv)
 	}
-	modelName := strings.TrimSpace(os.Getenv(modelEnv))
+	modelName := firstNonEmpty(os.Getenv(modelEnv), settings.Model)
 	if modelName == "" {
 		return nil, fmt.Errorf("bootstrap: %s is required", modelEnv)
 	}
@@ -94,13 +111,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Op
 	chatModel, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		APIKey:  apiKey,
 		Model:   modelName,
-		BaseURL: strings.TrimSpace(os.Getenv(baseURLEnv)),
+		BaseURL: firstNonEmpty(os.Getenv(baseURLEnv), settings.BaseURL),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap: create chat model: %w", err)
 	}
 
-	dbPath := strings.TrimSpace(os.Getenv(sqliteEnv))
+	dbPath := firstNonEmpty(os.Getenv(sqliteEnv), settings.SQLitePath)
 	if dbPath == "" {
 		dbPath = filepath.Join(cfg.Storage.Location, "golem.db")
 	}
@@ -118,32 +135,49 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Op
 		_ = db.Close()
 		return nil, fmt.Errorf("bootstrap: migrate sqlite store: %w", err)
 	}
-
-	workspaces := storage.NewWorkspaceFactory(cfg.Storage.Location)
-	provider := tools.NewProvider(cfg, workspaces, backend, nil, tools.WithLogger(logger))
-	runtime := &Runtime{db: db}
-	sandbox, sandboxTools, err := newSandbox(backend, workspaces, logger)
-	if err != nil {
+	if err := syncMCPServers(ctx, backend.MCPServerConfigs(), settings.MCPServers); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
+
+	workspaces := storage.NewWorkspaceFactory(cfg.Storage.Location)
+	mcpBuilder := cliMCP.New(cliMCP.Config{
+		Servers:      backend.MCPServerConfigs(),
+		TrustedHosts: cfg.AI.Tools.MCP.TrustedHosts,
+		Logger:       logger,
+	})
+	provider := tools.NewProvider(cfg, workspaces, backend, mcpBuilder, tools.WithLogger(logger))
+	runtime := &Runtime{db: db, mcpServers: backend.MCPServerConfigs()}
+	ready := false
+	defer func() {
+		if !ready {
+			_ = runtime.Close(context.Background())
+		}
+	}()
+	sandbox, sandboxTools, err := newSandbox(backend, workspaces, logger)
+	if err != nil {
+		return nil, err
+	}
 	if sandbox != nil {
+		runtime.sandbox = sandbox
 		if err := tools.RegisterBuiltins(provider, tools.Builtins{Sandbox: sandbox, SandboxConfig: sandboxTools}); err != nil {
-			_ = db.Close()
 			return nil, fmt.Errorf("bootstrap: register sandbox tools: %w", err)
 		}
-		runtime.sandbox = sandbox
 	}
 	runtime.Agent = agent.New(
 		chatModel,
-		backend,
+		backend, // sqlx.Store implements golem's chatmemory.Repository
 		provider,
 		cfg,
 		agent.WithBackend(backend),
 		agent.WithLogger(logger),
 		agent.WithModelName(modelName),
 	)
-	if o.scheduler != nil {
+	// Subagents are the one built-in family that needs the Agent itself, so
+	// core cannot add them from tools.Provider. Register them after Agent
+	// construction and before any run can be fired.
+	subagent.Register(provider, runtime.Agent, cfg, nil, logger)
+	if !o.withoutScheduler && o.scheduler != nil {
 		// The runner fires the agent, so it is built after it and stopped
 		// before it: Close must allow no new firing while old ones drain.
 		runner, err := schedule.New(backend.ScheduledTasks(), runtime.Agent, schedule.Config{
@@ -151,15 +185,73 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, opts ...Op
 			Scheduler: o.scheduler,
 		}, logger)
 		if err != nil {
+			runtime.Runner = runner
 			return nil, fmt.Errorf("bootstrap: create scheduler: %w", err)
 		}
+		runtime.Runner = runner
+		schedule.RegisterBuiltins(provider, schedule.NewTools(runner, backend.ScheduledTasks()))
 		if err := runner.Start(ctx); err != nil {
 			return nil, fmt.Errorf("bootstrap: start scheduler: %w", err)
 		}
-		schedule.RegisterBuiltins(provider, schedule.NewTools(runner, backend.ScheduledTasks()))
-		runtime.Runner = runner
 	}
+	if !o.withoutScheduler && o.scheduler == nil {
+		local := newLocalScheduler()
+		runtime.scheduler = local
+		runner, err := schedule.New(backend.ScheduledTasks(), runtime.Agent, schedule.Config{
+			Prompt:    cfg.AI.ScheduledTaskPrompt,
+			Scheduler: local,
+		}, logger)
+		if err != nil {
+			return nil, fmt.Errorf("bootstrap: create local scheduler: %w", err)
+		}
+		runtime.Runner = runner
+		schedule.RegisterBuiltins(provider, schedule.NewTools(runner, backend.ScheduledTasks()))
+		if err := runner.Start(ctx); err != nil {
+			return nil, fmt.Errorf("bootstrap: start local scheduler: %w", err)
+		}
+	}
+	ready = true
 	return runtime, nil
+}
+
+// ListMCPServers lists the local MCP records currently used by this runtime.
+func (r *Runtime) ListMCPServers() ([]store.MCPServerConfig, error) {
+	if r == nil || r.mcpServers == nil {
+		return nil, errors.New("bootstrap: MCP store is not configured")
+	}
+	return r.mcpServers.ListByOwner(context.Background(), "local")
+}
+
+// SaveMCPServer updates both the local config file and the live SQLX store.
+// The next agent turn will discover the new server through the same builder.
+func (r *Runtime) SaveMCPServer(server store.MCPServerConfig) error {
+	if r == nil || r.mcpServers == nil {
+		return errors.New("bootstrap: MCP store is not configured")
+	}
+	if err := SaveMCPServer(server); err != nil {
+		return err
+	}
+	servers, err := ListMCPServers()
+	if err != nil {
+		return err
+	}
+	for _, configured := range servers {
+		if configured.OwnerID == "local" && configured.Name == strings.TrimSpace(server.Name) {
+			return r.mcpServers.Save(context.Background(), configured)
+		}
+	}
+	return fmt.Errorf("bootstrap: saved MCP server %q was not found", server.Name)
+}
+
+// DeleteMCPServer updates both the local config file and the live SQLX store.
+func (r *Runtime) DeleteMCPServer(name string) error {
+	if r == nil || r.mcpServers == nil {
+		return errors.New("bootstrap: MCP store is not configured")
+	}
+	if err := DeleteMCPServer(name); err != nil {
+		return err
+	}
+	return r.mcpServers.DeleteByOwnerAndName(context.Background(), "local", strings.TrimSpace(name))
 }
 
 // Close stops active runs and closes the application-owned database.
@@ -170,6 +262,9 @@ func (r *Runtime) Close(ctx context.Context) error {
 	var errs []error
 	if r.Runner != nil {
 		r.Runner.Stop()
+	}
+	if r.scheduler != nil {
+		r.scheduler.Stop()
 	}
 	if r.Agent != nil {
 		if err := r.Agent.Shutdown(ctx); err != nil {
@@ -208,4 +303,37 @@ func openSQLite(ctx context.Context, path string) (*sqlx.DB, error) {
 		return nil, fmt.Errorf("bootstrap: ping sqlite: %w", err)
 	}
 	return db, nil
+}
+
+func syncMCPServers(ctx context.Context, servers store.MCPServerConfigStore, desired []store.MCPServerConfig) error {
+	if servers == nil {
+		return nil
+	}
+	const localOwner = "local"
+	existing, err := servers.ListByOwner(ctx, localOwner)
+	if err != nil {
+		return fmt.Errorf("bootstrap: list stored MCP servers: %w", err)
+	}
+	wanted := make(map[string]struct{}, len(desired))
+	for _, server := range desired {
+		owner := server.OwnerID
+		if owner == "" {
+			owner = localOwner
+		}
+		if owner == localOwner {
+			wanted[server.Name] = struct{}{}
+		}
+		if err := servers.Save(ctx, server); err != nil {
+			return fmt.Errorf("bootstrap: store MCP server %q: %w", server.Name, err)
+		}
+	}
+	for _, server := range existing {
+		if _, ok := wanted[server.Name]; ok {
+			continue
+		}
+		if err := servers.DeleteByOwnerAndName(ctx, localOwner, server.Name); err != nil {
+			return fmt.Errorf("bootstrap: remove stale MCP server %q: %w", server.Name, err)
+		}
+	}
+	return nil
 }
