@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/ishi-o/golem-cli/compare/v1.3.0...v1.4.0) (2026-09-02)
+
+
+### Features
+
+* upgrade CLI with sessions and golem integrations ([#13](https://github.com/ishi-o/golem-cli/issues/13)) ([56c6023](https://github.com/ishi-o/golem-cli/commit/56c60239a3febe0b94ab6e76cf54f1da0cfc42ae))
+
 ## 1.3.0 (2026-08-29)
 
 
