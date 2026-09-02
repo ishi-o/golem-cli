@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"sort"
 	"strings"
 
@@ -35,6 +38,7 @@ func newRunCommand(config Config) *cobra.Command {
 			if reader.Interactive() {
 				config.Output = reader.Output()
 			}
+			attachScheduledListener(config)
 			message := ""
 			if len(args) == 1 {
 				message = args[0]
@@ -50,16 +54,14 @@ func newRunCommand(config Config) *cobra.Command {
 			if strings.TrimSpace(message) == "" {
 				return errors.New("golem run: message is empty")
 			}
-			if len(args) == 1 {
-				if target, ok := config.Output.(terminalRenderTarget); ok {
-					target.sendTerminalEvent(terminalEvent{kind: terminalEventUser, text: message})
-				}
-			}
 			if sessionID == "" {
 				sessionID = config.Session
 			}
 			if requestID == "" {
 				requestID = sessionID
+			}
+			if len(args) == 1 {
+				return fireAndWaitWithUser(config, message, sessionID, requestID)
 			}
 			return fireAndWait(config, message, sessionID, requestID)
 		},
@@ -73,12 +75,54 @@ func newRunCommand(config Config) *cobra.Command {
 // used the command package internally before `run` became the canonical name.
 func newChatCommand(config Config) *cobra.Command { return newRunCommand(config) }
 
+func newDaemonCommand(config Config) *cobra.Command {
+	return &cobra.Command{
+		Use:   "daemon",
+		Short: "Keep local scheduled tasks running",
+		Args:  cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			if config.Runner == nil {
+				return errors.New("golem daemon: no agent runner configured")
+			}
+			attachScheduledListener(config)
+			if _, err := fmt.Fprintln(config.Output, "scheduler running (press Ctrl-C to stop)"); err != nil {
+				return err
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+			defer stop()
+			<-ctx.Done()
+			_, err := fmt.Fprintln(config.Output, "scheduler stopped")
+			return err
+		},
+	}
+}
+
 func newSessionCommand(config Config) *cobra.Command {
 	var requestPrefix string
 	command := &cobra.Command{
 		Use:   "session [SESSION_ID]",
 		Short: "Create or resume an interactive conversation session",
 		Args:  cobra.MaximumNArgs(1),
+		ValidArgsFunction: func(_ *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			if len(args) > 0 || config.SessionStore.List == nil {
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			sessions, err := config.SessionStore.List()
+			if err != nil {
+				// Completion must stay quiet when the local store is unavailable
+				// (for example, before the first database migration).
+				return nil, cobra.ShellCompDirectiveNoFileComp
+			}
+			sort.Strings(sessions)
+			completions := make([]string, 0, len(sessions))
+			for _, sessionID := range sessions {
+				sessionID = strings.TrimSpace(sessionID)
+				if sessionID != "" && strings.HasPrefix(sessionID, toComplete) {
+					completions = append(completions, sessionID)
+				}
+			}
+			return completions, cobra.ShellCompDirectiveNoFileComp
+		},
 		RunE: func(_ *cobra.Command, args []string) error {
 			sessionID := ""
 			if len(args) == 1 {
@@ -123,6 +167,7 @@ func runInteractiveSession(config Config, requestPrefix, sessionID string) error
 	if reader.Interactive() {
 		config.Output = reader.Output()
 	}
+	attachScheduledListener(config)
 	_, _ = fmt.Fprintf(config.Output, "session %s (type /exit to leave)\n", sessionID)
 	if resume {
 		if err := printSessionHistory(config, sessionID); err != nil {
@@ -243,6 +288,14 @@ func newSessionListCommand(config Config) *cobra.Command {
 }
 
 func fireAndWait(config Config, message, sessionID, requestID string) error {
+	return fireAndWaitInternal(config, message, sessionID, requestID, false)
+}
+
+func fireAndWaitWithUser(config Config, message, sessionID, requestID string) error {
+	return fireAndWaitInternal(config, message, sessionID, requestID, true)
+}
+
+func fireAndWaitInternal(config Config, message, sessionID, requestID string, showUser bool) error {
 	done := make(chan struct{})
 	listener := newTerminalListener(config.Output, done)
 	request := agent.NewRequest(agent.ChatScenario, message,
@@ -252,6 +305,41 @@ func fireAndWait(config Config, message, sessionID, requestID string) error {
 		agent.WithListener(listener),
 	)
 	request.Listeners = append(request.Listeners, listenerWithQuestions{input: config.Input, output: config.Output, reader: config.reader})
+	if queueRunner, ok := config.Runner.(QueueRunner); ok {
+		setter, hasSetter := config.reader.(submitHandlerReader)
+		submitter, hasSubmitter := config.reader.(lineSubmitter)
+		if hasSetter && hasSubmitter {
+			queued := 0
+			setter.SetSubmitHandler(func(nextMessage string) bool {
+				queued++
+				queuedRequestID := fmt.Sprintf("%s-queued-%d", requestID, queued)
+				queuedRequest := agent.NewRequest(agent.ChatScenario, nextMessage,
+					agent.WithRequestID(queuedRequestID),
+					agent.WithIdentity(config.UserID, sessionID, "cli"),
+					agent.WithConversation(sessionID, sessionID, queuedRequestID),
+				)
+				// FireOrQueue synchronously notifies the live run's listeners.
+				// Bubble Tea's Send is blocking from inside Update, so the offer
+				// must happen after the key event returns to the program loop.
+				go func() {
+					accepted := queueRunner.FireOrQueue(queuedRequest, func() string {
+						return nextMessage
+					}, compactText(nextMessage, 180))
+					if accepted {
+						return
+					}
+					submitter.submitLine(nextMessage)
+				}()
+				return true
+			})
+			defer setter.SetSubmitHandler(nil)
+		}
+	}
+	if showUser {
+		if target, ok := config.Output.(terminalRenderTarget); ok {
+			target.sendTerminalEvent(terminalEvent{kind: terminalEventUser, text: message})
+		}
+	}
 	if err := config.Runner.Fire(request); err != nil {
 		return err
 	}
@@ -295,8 +383,9 @@ func runConfigShow(config Config) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(config.Output, "api-key: %s\nmodel: %s\nbase-url: %s\nsqlite-path: %s\nstorage-location: %s\n",
-		maskSecret(values.APIKey), values.Model, values.BaseURL, values.SQLitePath, values.StorageLocation)
+	_, err = fmt.Fprintf(config.Output, "api-key: %s\nmodel: %s\nbase-url: %s\nsqlite-path: %s\nstorage-location: %s\ntrusted-directories: %s\n",
+		maskSecret(values.APIKey), values.Model, values.BaseURL, values.SQLitePath, values.StorageLocation,
+		strings.Join(values.TrustedDirectories, ", "))
 	return err
 }
 

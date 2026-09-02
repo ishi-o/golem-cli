@@ -92,6 +92,36 @@ func TestTerminalListenerRendersRunEvents(t *testing.T) {
 	require.NotContains(t, got, "\033[")
 }
 
+func TestScheduledRunListenerReportsResult(t *testing.T) {
+	var output strings.Builder
+	listener := &scheduledRunListener{output: &output, taskID: "task-1"}
+	listener.OnModel("gpt-test")
+	listener.OnUsage("gpt-test", &schema.TokenUsage{PromptTokens: 4, CompletionTokens: 3, TotalTokens: 7})
+	listener.OnContent("the scheduled work is done")
+	listener.OnFinished(agent.OutcomeCompleted)
+
+	require.Equal(t, "[schedule] task task-1 completed\nthe scheduled work is done\n", output.String())
+}
+
+func TestTerminalModelRendersScheduledResult(t *testing.T) {
+	model := newTerminalModel(make(chan terminalLineResult, 1))
+	model.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	model.applyEvent(terminalEvent{
+		kind:      terminalEventScheduled,
+		requestID: "task-1",
+		text:      "# Finished\n\nThe scheduled task ran.",
+		model:     "gpt-test",
+		usage:     &schema.TokenUsage{PromptTokens: 4, CompletionTokens: 3, TotalTokens: 7},
+		outcome:   agent.OutcomeCompleted,
+	})
+	model.rebuildViewport()
+
+	view := model.View()
+	require.Contains(t, view, "⏰ scheduled · task-1")
+	require.Contains(t, view, "completed · gpt-test: 4 in / 3 out / 7 total")
+	require.Contains(t, view, "Finished")
+}
+
 func TestToolRenderingMiddlewareUsesRunRenderer(t *testing.T) {
 	var output strings.Builder
 	renderer := newTerminalRenderer(&output)
@@ -158,7 +188,7 @@ func TestTerminalModelRendersFoldableBlocksAndMarkdown(t *testing.T) {
 	require.Equal(t, 1, strings.Count(view, "arguments:"))
 }
 
-func TestTerminalModelQuestionUsesTextareaSubmission(t *testing.T) {
+func TestTerminalModelQuestionUsesArrowSelection(t *testing.T) {
 	lines := make(chan terminalLineResult, 1)
 	model := newTerminalModel(lines)
 	model.applyEvent(terminalEvent{
@@ -168,14 +198,130 @@ func TestTerminalModelQuestionUsesTextareaSubmission(t *testing.T) {
 	})
 
 	require.True(t, model.questionActive)
-	model.input.SetValue("local")
-	_, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	require.Nil(t, command)
+	_, command = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	require.NotNil(t, command)
 	command()
 
 	result := <-lines
-	require.Equal(t, "local", result.line)
+	require.Equal(t, "remote", result.line)
 	require.NoError(t, result.err)
 	require.False(t, model.questionActive)
-	require.Contains(t, model.renderBlocks(), "local")
+	require.Contains(t, model.renderBlocks(), "remote")
+}
+
+func TestTerminalModelUsesOneInputPromptMarker(t *testing.T) {
+	model := newTerminalModel(make(chan terminalLineResult, 1))
+	view := model.View()
+	require.Equal(t, 1, strings.Count(view, "›"))
+}
+
+func TestTerminalModelQueuesInputWhileBusy(t *testing.T) {
+	lines := make(chan terminalLineResult, 1)
+	model := newTerminalModel(lines)
+	model.busy = true
+	model.input.Focus()
+
+	var submitted string
+	model.submitHandler = func(line string) bool {
+		submitted = line
+		return true
+	}
+	model.input.SetValue("follow up while thinking")
+
+	_, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	require.Nil(t, command)
+	require.Equal(t, "follow up while thinking", submitted)
+	select {
+	case result := <-lines:
+		t.Fatalf("queued input was returned as a new line: %#v", result)
+	default:
+	}
+	require.Empty(t, model.input.Value())
+}
+
+func TestTerminalModelScrollsWithMouseWheel(t *testing.T) {
+	model := newTerminalModel(make(chan terminalLineResult, 1))
+	model.viewport.Width = 20
+	model.viewport.Height = 3
+	model.viewport.SetContent("one\ntwo\nthree\nfour\nfive\nsix")
+
+	_, command := model.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelDown,
+	})
+	require.Nil(t, command)
+	require.Equal(t, 3, model.viewport.YOffset)
+
+	_, command = model.Update(tea.MouseMsg{
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelUp,
+	})
+	require.Nil(t, command)
+	require.Equal(t, 0, model.viewport.YOffset)
+}
+
+type queueTestReader struct {
+	output  io.Writer
+	handler func(string) bool
+}
+
+func (r *queueTestReader) ReadLine() (string, error) { return "", io.EOF }
+func (r *queueTestReader) Output() io.Writer         { return r.output }
+func (*queueTestReader) Interactive() bool           { return true }
+func (*queueTestReader) Close() error                { return nil }
+func (r *queueTestReader) SetSubmitHandler(handler func(string) bool) {
+	r.handler = handler
+}
+func (*queueTestReader) submitLine(string) {}
+
+type queueTestRunner struct {
+	reader    *queueTestReader
+	fired     []agent.Request
+	queued    []agent.Request
+	display   string
+	queueDone chan struct{}
+}
+
+func (r *queueTestRunner) Fire(request agent.Request) error {
+	r.fired = append(r.fired, request)
+	if r.reader.handler != nil {
+		r.reader.handler("follow up")
+		<-r.queueDone
+	}
+	for _, listener := range request.Listeners {
+		listener.OnFinished(agent.OutcomeCompleted)
+	}
+	return nil
+}
+
+func (r *queueTestRunner) FireOrQueue(request agent.Request, text func() string, display string) bool {
+	r.queued = append(r.queued, request)
+	r.display = display + "|" + text()
+	close(r.queueDone)
+	return true
+}
+
+func (*queueTestRunner) Cancel(string) bool { return false }
+
+func TestFireAndWaitOffersFollowUpToLiveRun(t *testing.T) {
+	reader := &queueTestReader{output: &strings.Builder{}}
+	runner := &queueTestRunner{reader: reader}
+	runner.queueDone = make(chan struct{})
+	config := Config{
+		Runner: runner,
+		Input:  strings.NewReader(""),
+		Output: reader.output,
+		UserID: "test-user",
+		reader: reader,
+	}
+
+	require.NoError(t, fireAndWait(config, "first", "session-1", "request-1"))
+	require.Len(t, runner.fired, 1)
+	require.Len(t, runner.queued, 1)
+	require.Equal(t, "request-1-queued-1", runner.queued[0].RequestID)
+	require.Equal(t, "session-1", runner.queued[0].ConversationID)
+	require.Equal(t, "follow up|follow up", runner.display)
+	require.Nil(t, reader.handler)
 }

@@ -23,34 +23,37 @@ const configFileEnv = "GOLEM_CONFIG_FILE"
 // API credentials belong to the model client, not to golem's public runtime
 // configuration.
 type SettingsValues struct {
-	APIKey          string
-	Model           string
-	BaseURL         string
-	SQLitePath      string
-	StorageLocation string
+	APIKey             string
+	Model              string
+	BaseURL            string
+	SQLitePath         string
+	StorageLocation    string
+	TrustedDirectories []string
 }
 
 // Settings combines the core runtime configuration with values consumed by
 // the CLI bootstrap layer.
 type Settings struct {
-	Config     coreconfig.Config
-	APIKey     string
-	Model      string
-	BaseURL    string
-	SQLitePath string
-	MCPServers []store.MCPServerConfig
+	Config             coreconfig.Config
+	APIKey             string
+	Model              string
+	BaseURL            string
+	SQLitePath         string
+	TrustedDirectories []string
+	MCPServers         []store.MCPServerConfig
 }
 
 // fileConfig is the on-disk, user-owned configuration. The file is kept
 // private so changing its representation does not become part of the core
 // library API.
 type fileConfig struct {
-	APIKey          string          `json:"api_key,omitempty"`
-	Model           string          `json:"model,omitempty"`
-	BaseURL         string          `json:"base_url,omitempty"`
-	SQLitePath      string          `json:"sqlite_path,omitempty"`
-	StorageLocation string          `json:"storage_location,omitempty"`
-	MCPServers      []fileMCPServer `json:"mcp_servers,omitempty"`
+	APIKey             string          `json:"api_key,omitempty"`
+	Model              string          `json:"model,omitempty"`
+	BaseURL            string          `json:"base_url,omitempty"`
+	SQLitePath         string          `json:"sqlite_path,omitempty"`
+	StorageLocation    string          `json:"storage_location,omitempty"`
+	TrustedDirectories []string        `json:"trusted_directories,omitempty"`
+	MCPServers         []fileMCPServer `json:"mcp_servers,omitempty"`
 }
 
 type fileMCPServer struct {
@@ -89,6 +92,12 @@ func LoadSettings() (Settings, error) {
 	}
 
 	storageLocation := firstNonEmpty(os.Getenv("GOLEM_STORAGE_LOCATION"), file.StorageLocation)
+	if storageLocation == "" {
+		storageLocation, err = os.Getwd()
+		if err != nil {
+			return Settings{}, fmt.Errorf("get current directory: %w", err)
+		}
+	}
 	c := coreconfig.Config{
 		Locale: os.Getenv("GOLEM_LOCALE"),
 		Storage: coreconfig.Storage{
@@ -118,12 +127,13 @@ func LoadSettings() (Settings, error) {
 		servers = append(servers, normalizeMCPServer(server))
 	}
 	return Settings{
-		Config:     c,
-		APIKey:     firstNonEmpty(os.Getenv(apiKeyEnv), file.APIKey),
-		Model:      firstNonEmpty(os.Getenv(modelEnv), file.Model),
-		BaseURL:    firstNonEmpty(os.Getenv(baseURLEnv), file.BaseURL),
-		SQLitePath: firstNonEmpty(os.Getenv(sqliteEnv), file.SQLitePath),
-		MCPServers: servers,
+		Config:             c,
+		APIKey:             firstNonEmpty(os.Getenv(apiKeyEnv), file.APIKey),
+		Model:              firstNonEmpty(os.Getenv(modelEnv), file.Model),
+		BaseURL:            firstNonEmpty(os.Getenv(baseURLEnv), file.BaseURL),
+		SQLitePath:         firstNonEmpty(os.Getenv(sqliteEnv), file.SQLitePath),
+		TrustedDirectories: append([]string(nil), file.TrustedDirectories...),
+		MCPServers:         servers,
 	}, nil
 }
 
@@ -148,11 +158,12 @@ func LoadSettingsValues() (SettingsValues, error) {
 		return SettingsValues{}, err
 	}
 	return SettingsValues{
-		APIKey:          file.APIKey,
-		Model:           file.Model,
-		BaseURL:         file.BaseURL,
-		SQLitePath:      file.SQLitePath,
-		StorageLocation: file.StorageLocation,
+		APIKey:             file.APIKey,
+		Model:              file.Model,
+		BaseURL:            file.BaseURL,
+		SQLitePath:         file.SQLitePath,
+		StorageLocation:    file.StorageLocation,
+		TrustedDirectories: append([]string(nil), file.TrustedDirectories...),
 	}, nil
 }
 
@@ -168,6 +179,9 @@ func SaveSettingsValues(values SettingsValues) error {
 	file.BaseURL = strings.TrimSpace(values.BaseURL)
 	file.SQLitePath = strings.TrimSpace(values.SQLitePath)
 	file.StorageLocation = strings.TrimSpace(values.StorageLocation)
+	if values.TrustedDirectories != nil {
+		file.TrustedDirectories = append([]string(nil), values.TrustedDirectories...)
+	}
 	return writeFileConfig(file)
 }
 

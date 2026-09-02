@@ -4,8 +4,8 @@ Two configuration surfaces exist, one per shape of using golem:
 
 - **As a library**, you populate the `core/config` structs from any source
   and call `Normalize` — no environment variable is read.
-- **The CLI** reads the variables below through `bootstrap` and applies the
-  same defaults.
+- **The CLI** reads the variables below through `bootstrap` and uses the
+  current directory as its default local workspace.
 
 The CLI also reads the local settings file shown by `golem config path`.
 Environment variables override values from that file, which makes the same
@@ -17,6 +17,11 @@ to use another path.
 Use `golem config set --api-key ... --model ...` to write the local settings
 file. It is created with mode `0600`; `golem config show` masks the key.
 
+The first interactive agent command asks you to trust its workspace. The
+approved absolute directories are saved as `trusted_directories` in the same
+file. Piped and other non-interactive commands refuse an untrusted workspace
+instead of approving it silently.
+
 ## Model and store
 
 | Variable | Purpose |
@@ -24,14 +29,14 @@ file. It is created with mode `0600`; `golem config show` masks the key.
 | `OPENAI_API_KEY` | API key for the CLI model |
 | `OPENAI_MODEL` | Model name used by the CLI |
 | `OPENAI_BASE_URL` | Optional OpenAI-compatible API base URL |
-| `GOLEM_SQLITE_PATH` | Optional SQLite database path (default `data/golem.db`) |
+| `GOLEM_SQLITE_PATH` | Optional SQLite database path (default `<workspace>/golem.db`) |
 
 ## Runtime (`GOLEM_*`)
 
 | Variable | Purpose |
 | --- | --- |
 | `GOLEM_LOCALE` | Language used by agent-generated runtime messages |
-| `GOLEM_STORAGE_LOCATION` | Root directory for user workspaces; defaults to `data` |
+| `GOLEM_STORAGE_LOCATION` | Root directory for user workspaces; defaults to the current directory |
 | `GOLEM_STORAGE_BASE_URL` | Base URL for published files |
 | `GOLEM_STORAGE_CDN_URL` | Optional CDN base URL for published files |
 | `GOLEM_ADMINS` | Comma-separated administrator IDs |
@@ -70,5 +75,7 @@ Docker sandboxes additionally honour the standard Docker environment
 (`DOCKER_HOST`, TLS variables).
 
 The CLI starts a local scheduler automatically, so the schedule tools are
-available without another service. Use `bootstrap.WithoutScheduler()` when
-embedding the bootstrap package and a long-lived scheduler is not wanted.
+available without another service. The scheduler is process-local: keep
+`golem session` open or run `golem daemon` for tasks that must fire after a
+short-lived command exits. Use `bootstrap.WithoutScheduler()` when embedding
+the bootstrap package and a long-lived scheduler is not wanted.

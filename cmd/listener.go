@@ -120,6 +120,183 @@ func (l terminalListener) OnContent(content string) {
 	_, _ = fmt.Fprint(l.output, content)
 }
 
+// scheduledDefaultListener observes scheduled task runs without sharing a
+// terminalRenderer between them. A renderer owns accumulated stream state,
+// while the scheduler may fire multiple tasks concurrently; each firing gets
+// its own small observer and emits one completed/failed event.
+type scheduledDefaultListener struct {
+	agent.ListenerFuncs
+
+	output  io.Writer
+	writeMu *sync.Mutex
+}
+
+func newScheduledDefaultListener(output io.Writer) *scheduledDefaultListener {
+	return &scheduledDefaultListener{output: output, writeMu: &sync.Mutex{}}
+}
+
+// attachScheduledListener adds the observer only to command runtimes backed
+// by golem's Agent. The optional interface keeps cmd usable with lightweight
+// runners supplied by embedders and tests.
+func attachScheduledListener(config Config) {
+	runner, ok := config.Runner.(DefaultListenerRunner)
+	if !ok {
+		return
+	}
+	runner.AddDefaultListener(newScheduledDefaultListener(config.Output))
+}
+
+func (l *scheduledDefaultListener) OnStart(run *agent.RunContext) {
+	if l == nil || run == nil {
+		return
+	}
+	request := run.Request()
+	taskID := strings.TrimSpace(request.ScheduledTaskID)
+	if taskID == "" {
+		return
+	}
+	run.AddListener(&scheduledRunListener{
+		output:  l.output,
+		writeMu: l.writeMu,
+		taskID:  taskID,
+	})
+	l.announce(fmt.Sprintf("[schedule] task %s started", taskID))
+}
+
+func (l *scheduledDefaultListener) announce(message string) {
+	if l == nil || l.output == nil {
+		return
+	}
+	if target, ok := l.output.(terminalRenderTarget); ok {
+		target.sendTerminalEvent(terminalEvent{kind: terminalEventStatus, text: message})
+		return
+	}
+	if l.writeMu == nil {
+		_, _ = fmt.Fprintln(l.output, message)
+		return
+	}
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
+	_, _ = fmt.Fprintln(l.output, message)
+}
+
+type scheduledRunListener struct {
+	agent.ListenerFuncs
+
+	output  io.Writer
+	writeMu *sync.Mutex
+	taskID  string
+
+	mu       sync.Mutex
+	content  string
+	err      error
+	model    string
+	usage    *schema.TokenUsage
+	finished bool
+}
+
+func (l *scheduledRunListener) OnModel(model string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.model = strings.TrimSpace(model)
+	l.mu.Unlock()
+}
+
+func (l *scheduledRunListener) OnUsage(model string, usage *schema.TokenUsage) {
+	if l == nil || usage == nil {
+		return
+	}
+	l.mu.Lock()
+	if strings.TrimSpace(model) != "" {
+		l.model = strings.TrimSpace(model)
+	}
+	copy := *usage
+	l.usage = &copy
+	l.mu.Unlock()
+}
+
+func (l *scheduledRunListener) OnContent(content string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.content = content
+	l.mu.Unlock()
+}
+
+func (l *scheduledRunListener) OnError(err error) {
+	if l == nil || err == nil {
+		return
+	}
+	l.mu.Lock()
+	l.err = err
+	l.mu.Unlock()
+}
+
+func (l *scheduledRunListener) OnFinished(outcome agent.Outcome) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	if l.finished {
+		l.mu.Unlock()
+		return
+	}
+	l.finished = true
+	content := strings.TrimSpace(l.content)
+	err := l.err
+	model := l.model
+	usage := l.usage
+	l.mu.Unlock()
+
+	event := terminalEvent{
+		kind:      terminalEventScheduled,
+		requestID: l.taskID,
+		text:      content,
+		model:     model,
+		usage:     usage,
+		outcome:   outcome,
+	}
+	if err != nil {
+		event.err = err.Error()
+	}
+	if target, ok := l.output.(terminalRenderTarget); ok {
+		target.sendTerminalEvent(event)
+		return
+	}
+
+	status := strings.ToLower(strings.TrimSpace(string(outcome)))
+	if status == "" {
+		status = "finished"
+	}
+	message := fmt.Sprintf("[schedule] task %s %s", l.taskID, status)
+	if err != nil {
+		message += ": " + err.Error()
+	}
+	if content != "" {
+		message += "\n" + content
+	}
+	l.write(message + "\n")
+}
+
+func (l *scheduledRunListener) write(message string) {
+	if l == nil || l.output == nil {
+		return
+	}
+	if l.writeMu == nil {
+		_, _ = io.WriteString(l.output, message)
+		return
+	}
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
+	_, _ = io.WriteString(l.output, message)
+}
+
+var _ agent.ResponseListener = (*scheduledDefaultListener)(nil)
+var _ agent.ResponseListener = (*scheduledRunListener)(nil)
+
 // terminalRenderer understands the listener contract's accumulated content.
 // It is append-only for plain output: replacing a growing multi-line frame in
 // place makes terminal scrollback depend on cursor arithmetic. Interactive
