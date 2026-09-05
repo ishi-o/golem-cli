@@ -14,7 +14,7 @@ require (
 	github.com/ishi-o/golem/sandbox/docker v1.0.0
 	github.com/ishi-o/golem/store/sqlx v1.0.0
 	github.com/jmoiron/sqlx v1.4.0
-	github.com/mark3labs/mcp-go v0.58.0
+	github.com/mark3labs/mcp-go v1.0.0
 	github.com/robfig/cron/v3 v3.0.0
 	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.11.1
